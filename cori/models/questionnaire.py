@@ -1,30 +1,25 @@
 from typing import Literal
 
-from pydantic import BaseModel, HttpUrl, model_validator
+from pydantic import BaseModel, Field
+
+from cori.models.fields import CompanyName, JobDescription
 
 
 class QuestionnaireRequest(BaseModel):
-    job_url: HttpUrl | None = None
-    job_description: str | None = None
-    company_name: str | None = None
-
-    @model_validator(mode="after")
-    def at_least_one_input(self) -> "QuestionnaireRequest":
-        if not any((self.job_url, self.job_description, self.company_name)):
-            raise ValueError(
-                "Provide at least one of job_url, job_description, or company_name"
-            )
-        return self
+    job_description: JobDescription
+    company_name: CompanyName | None = None
 
 
 class Question(BaseModel):
-    id: str
-    text: str
+    id: str = Field(description="Short snake_case identifier, e.g. 'kubernetes_experience'")
+    text: str = Field(
+        description="Question addressing the candidate directly with you/your pronouns"
+    )
     category: Literal["personal_info", "experience", "skills", "motivation"]
-    input_type: Literal["text", "textarea"]
-    required: bool = True
+    input_type: Literal["text", "textarea"] = Field(
+        description="Use 'text' for short factual answers, 'textarea' for detailed responses"
+    )
 
 
 class QuestionnaireResponse(BaseModel):
     questions: list[Question]
-    job_description: str | None = None

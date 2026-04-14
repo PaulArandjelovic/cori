@@ -1,17 +1,21 @@
 import logging
 
+from typing import Final, Mapping
+
+from google.genai import errors as genai_errors, types
+
 from cori.config import get_genai_client, settings
 from cori.models.research import CompanyContext
 
 logger = logging.getLogger(__name__)
 
-TONE_DESCRIPTIONS = {
+TONE_DESCRIPTIONS: Final[Mapping[str, str]] = {
     "formal": "professional and formal",
     "conversational": "warm and conversational while remaining professional",
     "confident": "confident and assertive while remaining respectful",
 }
 
-GENERATE_PROMPT = """
+GENERATE_PROMPT: Final[str] = """
 Write a personalized cover letter for a job application.
 The tone should be {tone_description}.
 
@@ -35,16 +39,12 @@ Guidelines:
 
 def _build_company_section(ctx: CompanyContext) -> str:
     """Include only the company context fields we actually have."""
-    parts = []
-    if ctx.description:
-        parts.append(f"About: {ctx.description}")
-    if ctx.industry:
-        parts.append(f"Industry: {ctx.industry}")
-    if ctx.products_services:
-        parts.append(f"Products/Services: {', '.join(ctx.products_services)}")
-    if ctx.culture_signals:
-        parts.append(f"Culture: {', '.join(ctx.culture_signals)}")
-    return "\n".join(parts) or "No company information available."
+    company = "" 
+    company += f"About: {ctx.description}\n" if ctx.description else ""
+    company += f"Industry: {ctx.industry}\n" if ctx.industry else ""
+    company += f"Products/Services: {', '.join(ctx.products_services)}\n" if ctx.products_services else ""
+    company += f"Culture: {', '.join(ctx.culture_signals)}\n" if ctx.culture_signals else ""
+    return company.strip() or "No company information available."
 
 
 def _build_prompt(
@@ -60,7 +60,7 @@ def _build_prompt(
         if job_description
         else ""
     )
-    tone_description = TONE_DESCRIPTIONS.get(tone, TONE_DESCRIPTIONS["formal"])
+    tone_description = TONE_DESCRIPTIONS[tone]
 
     return GENERATE_PROMPT.format(
         tone_description=tone_description,
@@ -79,9 +79,18 @@ async def generate_cover_letter(
     """Generate a cover letter using the LLM."""
     prompt = _build_prompt(answers, company_context, job_description, tone)
 
-    client = get_genai_client()
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-    )
-    return response.text.strip()
+    try:
+        client = get_genai_client()
+        response = await client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+            ),
+        )
+        if not response.text:
+            raise ValueError("Model returned an empty response")
+        return response.text.strip()
+    except (genai_errors.APIError, ValueError):
+        logger.exception("Cover letter generation failed")
+        raise

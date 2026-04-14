@@ -1,33 +1,23 @@
-import json
 import logging
 
-from google.genai import types
+from typing import Final
+
+from google.genai import errors as genai_errors, types
+from pydantic import ValidationError
 
 from cori.config import get_genai_client, settings
-from cori.models.research import CompanyContext, Source
+from cori.models.research import CompanyContext, ResearchResult, Source
 
 logger = logging.getLogger(__name__)
 
-RESEARCH_PROMPT = """
-Research the company "{company_name}" and extract structured information.
-{job_context}
+RESEARCH_PROMPT: Final[str] = (
+    'Research the company "{company_name}" and extract structured information.\n'
+    "{job_context}\n"
+    "Only include facts that are clearly supported by search results — do not "
+    "guess or fabricate details."
+)
 
-Only include facts that are clearly supported by search results — do not
-guess or fabricate details.
-
-Return a JSON object with:
-- "description": one-paragraph company description (null if not enough info)
-- "industry": the company's industry or sector (null if unknown)
-- "products_services": list of main products or services (empty list if unknown)
-- "culture_signals": list of notable culture aspects, values, or recent initiatives
-  (empty list if unknown)
-- "confidence": "high" if multiple sources agree on key facts, "medium" if limited
-  info found, "low" if mostly uncertain
-
-Return ONLY the JSON object.
-"""
-
-_search_tool = types.Tool(google_search=types.GoogleSearch())
+_search_tool: Final = types.Tool(google_search=types.GoogleSearch())
 
 
 def _extract_sources(candidate: types.Candidate) -> list[Source]:
@@ -51,12 +41,9 @@ async def research_company(
     job_url: str | None = None,
 ) -> CompanyContext:
     """Use Gemini with Google Search grounding to research a company."""
-    job_parts = []
-    if job_title:
-        job_parts.append(f"The role is: {job_title}")
-    if job_url:
-        job_parts.append(f"Job posting URL: {job_url}")
-    job_context = "\n".join(job_parts)
+    job_context = ""
+    job_context += f"The role is: {job_title}\n" if job_title else ""
+    job_context += f"Job posting URL: {job_url}\n" if job_url else ""
 
     prompt = RESEARCH_PROMPT.format(
         company_name=company_name,
@@ -71,21 +58,19 @@ async def research_company(
             config=types.GenerateContentConfig(
                 tools=[_search_tool],
                 response_mime_type="application/json",
+                response_schema=ResearchResult,
+                temperature=0.2,
             ),
         )
 
-        data = json.loads(response.text)
-        sources = _extract_sources(response.candidates[0]) if response.candidates else []
+        result = ResearchResult.model_validate_json(response.text)
+        sources = _extract_sources(response.candidates[0])
 
         return CompanyContext(
+            **result.model_dump(),
             name=company_name,
-            description=data.get("description"),
-            industry=data.get("industry"),
-            products_services=data.get("products_services", []),
-            culture_signals=data.get("culture_signals", []),
             sources=sources,
-            confidence=data.get("confidence", "low"),
         )
-    except Exception:
+    except (genai_errors.APIError, ValueError, ValidationError):
         logger.exception("Company research failed for %s", company_name)
         return CompanyContext(name=company_name, confidence="low")
